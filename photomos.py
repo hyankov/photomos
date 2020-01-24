@@ -17,111 +17,19 @@ import multiprocessing as mp
 import os
 import random
 from argparse import Namespace
-from typing import List, Tuple
+from typing import Tuple
 from PIL import Image
 from tqdm import tqdm, trange
 
 
-class PhotoMosaic:
+class Palette:
     """
     Description
     --
-    Creates a mosaic based on a source photo, from a library of photos.
+    Color and palette management.
     """
 
-    def _load_library_image(self, args) -> Tuple:
-        """
-        Description
-        --
-        Loads a library image, resizes it to the proper size and finds its
-        dominant color.
-
-        Parameters
-        --
-        - args - a tuple
-            - img_path - the path to the image.
-            - width - the width to which to resize the image.
-            - height - the height to which to resize the image.
-
-        Returns
-        --
-        Tuple of dominant color and properly sized library image that can replace it.
-        """
-
-        # Unpack the arguments
-        library_image_path, width, height = args
-
-        if not os.path.exists(library_image_path):
-            raise ValueError("File '{}' does not exist".format(library_image_path))
-
-        # Open the library image
-        try:
-            with Image.open(library_image_path) as lib_img:
-                # Resize it to the size of a mosaic piece
-                lib_img = lib_img.resize((width, height), Image.BICUBIC)
-
-                # Get its average (dominant) color
-                color = self._get_average_color(lib_img)
-
-                return (color, lib_img)
-        except Exception:
-            # Could not load the file
-            pass
-
-    def _load_library(self, library_path: str, width: int, height: int) -> List:
-        """
-        Description
-        --
-        Loads the library files into a list.
-
-        Parameters
-        --
-        - library_path - the path to the library.
-        - width - the width to which to resize the image.
-        - height - the height to which to resize the image.
-
-        Returns
-        --
-        A list of tuples, where the first part is the dominant color and the second
-        is the properly sized (as big as the mosaic piece) image.
-        """
-
-        if not library_path:
-            raise ValueError("library_path is required")
-
-        if not os.path.exists(library_path):
-            raise ValueError("Folder '{}' does not exist".format(library_path))
-
-        if not os.listdir(library_path):
-            raise ValueError("Folder '{}' is empty".format(library_path))
-
-        if width < 1:
-            raise ValueError("width must be positive number")
-
-        if height < 1:
-            raise ValueError("height must be positive number")
-
-        # TODO: Require minimum number of images?
-
-        all_files = glob.glob(os.path.join(library_path, "*.*"))
-
-        results = []
-
-        # Parallel work with a progress bar
-        with mp.Pool(mp.cpu_count()) as pool:
-            for result in tqdm(
-                    pool.imap_unordered(
-                        self._load_library_image,
-                        ((file, width, height) for file in all_files),
-                        chunksize=5),
-                    desc='Loading library',
-                    total=len(all_files)):
-                if result:
-                    results.append(result)
-
-        return results
-
-    def _get_average_color(self, img: Image) -> Tuple:
+    def get_average_color(self, img: Image) -> Tuple:
         """
         Description
         --
@@ -144,7 +52,123 @@ class PhotoMosaic:
         # the entire image.
         return img.resize((1, 1), Image.BICUBIC).getpixel((0, 0))
 
-    def _get_closest_library_img(self, target_color: tuple, library: List) -> Image:
+
+class Library:
+    """
+    Description
+    --
+    Handles the library of images to use as a mosaic.
+    """
+
+    def __init__(self, palette=Palette()):
+        """
+        Description
+        --
+        Initializes the instance.
+
+        Parameters
+        --
+        - palette - the palette manager.
+        """
+
+        if not palette:
+            raise ValueError("palette is required")
+
+        self._palette = palette
+        self._color_images = []
+
+    def _load_image(self, args) -> Tuple:
+        """
+        Description
+        --
+        Loads a library image, resizes it to the proper size and finds its
+        dominant color.
+
+        Parameters
+        --
+        - args - a tuple
+            - img_path - the path to the image.
+            - width - the width to which to resize the image.
+            - height - the height to which to resize the image.
+
+        Returns
+        --
+        Tuple of dominant color and properly sized library image that can replace it.
+        """
+
+        # Unpack the arguments
+        image_path, width, height = args
+
+        if not os.path.exists(image_path):
+            raise ValueError("File '{}' does not exist".format(image_path))
+
+        # Open the library image
+        try:
+            with Image.open(image_path) as lib_img:
+                # Resize it to the size of a mosaic piece
+                lib_img = lib_img.resize((width, height), Image.BICUBIC)
+
+                # Get its average (dominant) color
+                color = self._palette.get_average_color(lib_img)
+
+                return (color, lib_img)
+        except Exception:
+            # Could not load the file
+            pass
+
+    def load(self, folder_path: str, width: int, height: int) -> int:
+        """
+        Description
+        --
+        Loads the library files into a list.
+
+        Parameters
+        --
+        - folder_path - the path to the library folder.
+        - width - the width to which to resize the image.
+        - height - the height to which to resize the image.
+
+        Returns
+        --
+        The number of images loaded.
+        """
+
+        self._color_images = []
+
+        if not folder_path:
+            raise ValueError("folder_path is required")
+
+        if not os.path.exists(folder_path):
+            raise ValueError("Folder '{}' does not exist".format(folder_path))
+
+        if not os.listdir(folder_path):
+            raise ValueError("Folder '{}' is empty".format(folder_path))
+
+        if width < 1:
+            raise ValueError("width must be positive number")
+
+        if height < 1:
+            raise ValueError("height must be positive number")
+
+        # TODO: Require minimum number of images?
+
+        all_files = glob.glob(os.path.join(folder_path, "*.*"))
+
+        # Parallel work with a progress bar
+        with mp.Pool(mp.cpu_count()) as pool:
+            for result in tqdm(
+                    pool.imap_unordered(
+                        self._load_image,
+                        ((file, width, height) for file in all_files),
+                        chunksize=5),
+                    desc='Loading library',
+                    total=len(all_files)):
+                if result:
+                    self._color_images.append(result)
+
+        return len(self._color_images)
+
+    def get_closest_image(self, target_color: tuple) -> Image:
         """
         Description
         --
@@ -154,7 +178,6 @@ class PhotoMosaic:
         --
         - target_color - the color, which we're searching a replacement
         image for.
-        - library - the library of properly sized images.
 
         Returns
         --
@@ -165,15 +188,15 @@ class PhotoMosaic:
         distances = []
 
         # For each image in the library ...
-        for lib_entry in library:
-            lib_color, lib_image = lib_entry
+        for image in self._color_images:
+            color, img = image
 
             # Calculate the distance between the target color and the library image color
-            cr, cg, cb = lib_color
+            cr, cg, cb = color
             distance = math.sqrt(abs(r - cr)**2 + abs(g - cg)**2 + abs(b - cb)**2)
 
             # Add to the list of tuples (distance, library image)
-            distances.append((distance, lib_image))
+            distances.append((distance, img))
 
         sorted_distances = sorted(distances, key=lambda tup: tup[0])
 
@@ -187,6 +210,35 @@ class PhotoMosaic:
 
         # Return the CLOSEST image
         return closest_image[1]
+
+
+class PhotoMosaic:
+    """
+    Description
+    --
+    Creates a mosaic based on a source photo, from a library of photos.
+    """
+
+    def __init__(self, library=Library(), palette=Palette()) -> None:
+        """
+        Description
+        --
+        Initializes the instance.
+
+        Parameters
+        --
+        - library - the library manager.
+        - palette - the palette manager.
+        """
+
+        if not library:
+            raise ValueError("library is required")
+
+        if not palette:
+            raise ValueError("palette is required")
+
+        self._library = library
+        self._palette = palette
 
     def _create_mosaic_piece(self, args: tuple) -> Tuple:
         """
@@ -204,7 +256,6 @@ class PhotoMosaic:
             - sample_height
             - mosaic_width
             - mosaic_height
-            - library - the library of images.
 
         Returns
         --
@@ -213,7 +264,7 @@ class PhotoMosaic:
         """
 
         # Unpack the parameters
-        coord, source_image, sample_width, sample_height, mosaic_width, mosaic_height, library = args
+        coord, source_image, sample_width, sample_height, mosaic_width, mosaic_height = args
 
         # Process a square of the source image
         x, y = coord
@@ -225,17 +276,17 @@ class PhotoMosaic:
         piece_of_source_img = source_image.crop(source_box)
 
         # Get the average RGB of the image
-        average_color = self._get_average_color(piece_of_source_img)
+        average_color = self._palette.get_average_color(piece_of_source_img)
 
         # Get image from the library that's closest to the average color of the
         # piece of source image we're processing.
-        replacement_image = self._get_closest_library_img(average_color, library)
+        replacement_image = self._library.get_closest_image(average_color)
 
         if not replacement_image:
             # No replacement image was found, replace it with a solid color
             replacement_image = Image.new('RGB', (mosaic_width, mosaic_height), average_color)
 
-        # Stitch the replacement into the original
+        # Returns the image to replace the pixels at the coordinates.
         return (replacement_image, coord)
 
     def _create_mosaic(self, args: Namespace) -> None:
@@ -243,6 +294,10 @@ class PhotoMosaic:
         Description
         --
         Creates the mosaic, based on command-line arguments.
+
+        Parameters
+        --
+        - args - the arguments.
         """
 
         # If source file was not provided, pick a random one from the library
@@ -258,7 +313,7 @@ class PhotoMosaic:
         print("Saving output to '{}".format(result_filename))
         result_image.save(result_filename)
 
-    def create_mosaic(self, source_filename: str, library_path: str, source_pixels: int, mosaic_pixels: int) -> None:
+    def create_mosaic(self, source_filename: str, library_path: str, spx: int, mpx: int) -> Image:
         """
         Description
         --
@@ -268,8 +323,8 @@ class PhotoMosaic:
         --
         - source_filename - the filename of the source image.
         - library_path - the path to the folder containing the images.
-        - source_pixels - the width of the sampling box for the source image.
-        - mosaic_pixels - the width of the mosaic piece images.
+        - spx - the width of the sampling box for the source image.
+        - mpx - the width of the mosaic piece images.
 
         Returns
         --
@@ -282,11 +337,11 @@ class PhotoMosaic:
         if not os.path.exists(source_filename):
             raise ValueError("File '{}' does not exist".format(source_filename))
 
-        if source_pixels < 5:
-            raise ValueError("source_pixels cannot be less than 5")
+        if spx < 5:
+            raise ValueError("spx cannot be less than 5")
 
-        if mosaic_pixels < 5:
-            raise ValueError("mosaic_pixels cannot be less than 5")
+        if mpx < 5:
+            raise ValueError("mpx cannot be less than 5")
 
         with Image.open(source_filename) as source_image:
             source_width, source_height = source_image.size
@@ -297,18 +352,10 @@ class PhotoMosaic:
             # Calculate dimensions, based on ratio
             # TODO: Need to take into consideration the dimensions of the mosaic
             # library image, or ratio could be skewed.
-            mosaic_width = mosaic_pixels
+            mosaic_width = mpx
             mosaic_height = int(mosaic_width / ratio)
-            sample_width = source_pixels
+            sample_width = spx
             sample_height = int(sample_width / ratio)
-
-            # Load library into memory. The images are loaded in the size they'll be pasted into
-            library = self._load_library(library_path, mosaic_width, mosaic_height)
-
-            # Did we load anything?
-            if not library:
-                print("Library is empty, aborting ...")
-                return None
 
             # Create the result image, as all-black
             result_image = Image.new(
@@ -324,12 +371,20 @@ class PhotoMosaic:
                 for y in range(math.ceil(source_height / sample_height)):
                     coordinates.append((x, y))
 
+            # Load library into memory. The images are loaded in the size they'll be pasted into
+            count = self._library.load(library_path, mosaic_width, mosaic_height)
+
+            # Did we load anything?
+            if count == 0:
+                print("Could not load any images, aborting ...")
+                return None
+
             # In parallel, process multiple boxes at the same time, on all CPUs
             with mp.Pool(mp.cpu_count()) as pool:
                 for result in tqdm(
                         pool.imap_unordered(
                             self._create_mosaic_piece,
-                            ([coord, source_image, sample_width, sample_height, mosaic_width, mosaic_height, library] for coord in coordinates),
+                            ([coord, source_image, sample_width, sample_height, mosaic_width, mosaic_height] for coord in coordinates),
                             chunksize=1000),
                         desc='Generating mosaic',
                         total=len(coordinates)):
@@ -352,11 +407,12 @@ class PhotoMosaic:
         """
         Description
         --
-        Gets the command line arguments.
+        Parses the command line arguments.
 
         Returns
         --
-        Namespace with the argument names and values.
+        Namespace with the argument names and values, as supplied
+        by the command line.
         """
 
         parser = argparse.ArgumentParser("Photo mosaic", "Creates a mosaic from images.")
