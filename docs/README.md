@@ -91,7 +91,6 @@ result.save("mosaic.jpg")
 - Library
   - Require minimum number of images?
   - Analyze spectrum completeness
-  - Test with and support other image types
   - Threshold of distance, pick random within the group instead of the first one. If no appropriate image to replace with, replace with solid color?
 - Respect image ratios and orientation
 - Use Python installer and tkinter to create a stand-alone Windows application

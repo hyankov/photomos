@@ -55,14 +55,18 @@ class PhotoMosaic:
             raise ValueError("File '{}' does not exist".format(library_image_path))
 
         # Open the library image
-        with Image.open(library_image_path) as lib_img:
-            # Resize it to the size of a mosaic piece
-            lib_img = lib_img.resize((width, height), Image.ANTIALIAS)
+        try:
+            with Image.open(library_image_path) as lib_img:
+                # Resize it to the size of a mosaic piece
+                lib_img = lib_img.resize((width, height), Image.BICUBIC)
 
-            # Get its average (dominant) color
-            color = self._get_average_color(lib_img)
+                # Get its average (dominant) color
+                color = self._get_average_color(lib_img)
 
-            return (color, lib_img)
+                return (color, lib_img)
+        except Exception:
+            # Could not load the file
+            pass
 
     def _load_library(self, library_path: str, width: int, height: int) -> List:
         """
@@ -99,8 +103,7 @@ class PhotoMosaic:
 
         # TODO: Require minimum number of images?
 
-        # TODO: Include other formats too.
-        all_files = glob.glob(os.path.join(library_path, "*.jpg"))
+        all_files = glob.glob(os.path.join(library_path, "*.*"))
 
         results = []
 
@@ -110,10 +113,11 @@ class PhotoMosaic:
                     pool.imap_unordered(
                         self._load_library_image,
                         ((file, width, height) for file in all_files),
-                        chunksize=10),
+                        chunksize=5),
                     desc='Loading library',
                     total=len(all_files)):
-                results.append(result)
+                if result:
+                    results.append(result)
 
         return results
 
@@ -138,7 +142,7 @@ class PhotoMosaic:
         # Resize the image to 1px x 1px and get the pixel color.
         # That should be representing the dominant/average color for
         # the entire image.
-        return img.resize((1, 1), Image.ANTIALIAS).getpixel((0, 0))
+        return img.resize((1, 1), Image.BICUBIC).getpixel((0, 0))
 
     def _get_closest_library_img(self, target_color: tuple, library: List) -> Image:
         """
@@ -177,6 +181,10 @@ class PhotoMosaic:
         # appropriate image to replace with, replace with solid color?
         closest_image = sorted_distances[0]
 
+        # TODO: Threshold?
+        # if closest_image[0] > 30:
+        #   return None
+
         # Return the CLOSEST image
         return closest_image[1]
 
@@ -190,8 +198,12 @@ class PhotoMosaic:
         Parameters
         --
         - args - the tupled parameters.
-            - boxes - source and result box (coordinates).
+            - coord - the coordinates.
             - source_image - the source image.
+            - sample_width
+            - sample_height
+            - mosaic_width
+            - mosaic_height
             - library - the library of images.
 
         Returns
@@ -201,12 +213,15 @@ class PhotoMosaic:
         """
 
         # Unpack the parameters
-        boxes, source_image, library = args
-
-        source_box = boxes['source_box']
-        result_box = boxes['result_box']
+        coord, source_image, sample_width, sample_height, mosaic_width, mosaic_height, library = args
 
         # Process a square of the source image
+        x, y = coord
+        source_box = (
+            x * sample_width,
+            y * sample_height,
+            (x * sample_width) + sample_width,
+            (y * sample_height) + sample_height)
         piece_of_source_img = source_image.crop(source_box)
 
         # Get the average RGB of the image
@@ -216,8 +231,12 @@ class PhotoMosaic:
         # piece of source image we're processing.
         replacement_image = self._get_closest_library_img(average_color, library)
 
+        if not replacement_image:
+            # No replacement image was found, replace it with a solid color
+            replacement_image = Image.new('RGB', (mosaic_width, mosaic_height), average_color)
+
         # Stitch the replacement into the original
-        return (replacement_image, result_box)
+        return (replacement_image, coord)
 
     def _create_mosaic(self, args: Namespace) -> None:
         """
@@ -229,6 +248,7 @@ class PhotoMosaic:
         # If source file was not provided, pick a random one from the library
         source_filename = args.source_filename
         if not source_filename:
+            # TODO: Any eligible image actually
             source_filename = random.choice(glob.glob(os.path.join(args.library, "*.jpg")))
 
         result_image = self.create_mosaic(source_filename, args.library, args.source_pixels, args.mosaic_pixels)
@@ -262,22 +282,25 @@ class PhotoMosaic:
         if not os.path.exists(source_filename):
             raise ValueError("File '{}' does not exist".format(source_filename))
 
-        if source_pixels < 10:
-            raise ValueError("source_pixels cannot be less than 10")
+        if source_pixels < 5:
+            raise ValueError("source_pixels cannot be less than 5")
 
-        if mosaic_pixels < 10:
-            raise ValueError("mosaic_pixels cannot be less than 10")
+        if mosaic_pixels < 5:
+            raise ValueError("mosaic_pixels cannot be less than 5")
 
         with Image.open(source_filename) as source_image:
             source_width, source_height = source_image.size
 
-            # X width is the level of details, Y height is keeping the ratio
-            mosaic_width = mosaic_pixels
+            # The ratio of the source image
+            ratio = source_width / source_height
 
-            # for Y, preserve the ratio of the source image
+            # Calculate dimensions, based on ratio
             # TODO: Need to take into consideration the dimensions of the mosaic
             # library image, or ratio could be skewed.
-            mosaic_height = int((source_height / (source_width / mosaic_width)))
+            mosaic_width = mosaic_pixels
+            mosaic_height = int(mosaic_width / ratio)
+            sample_width = source_pixels
+            sample_height = int(sample_width / ratio)
 
             # Load library into memory. The images are loaded in the size they'll be pasted into
             library = self._load_library(library_path, mosaic_width, mosaic_height)
@@ -287,49 +310,41 @@ class PhotoMosaic:
                 print("Library is empty, aborting ...")
                 return None
 
-            # Dimensions of sampling for the source image
-            sample_width = source_pixels
-
-            # for Y, preserve the ratio of the source image
-            sample_height = int((source_height / (source_width / sample_width)))
-
             # Create the result image, as all-black
             result_image = Image.new(
                 'RGB',
                 (
-                    int(mosaic_width * (source_width / sample_width)),
-                    int(mosaic_height * (source_height / sample_height))
+                    int(source_width * (mosaic_width / sample_width)),
+                    int(source_height * ((mosaic_width / ratio) / (sample_width / ratio)))
                 ),
                 (0, 0, 0))
 
-            boxes = []
-            for x_step in trange(source_width // sample_width, desc='Splitting source image'):
-                for y_step in range(source_height // sample_height):
-                    boxes.append({
-                        'source_box': (
-                            x_step * sample_width,
-                            y_step * sample_height,
-                            (x_step * sample_width) + sample_width - 1,
-                            (y_step * sample_height) + sample_height - 1),
-
-                        'result_box': (
-                            x_step * mosaic_width,
-                            y_step * mosaic_height)
-                    })
+            coordinates = []
+            for x in trange(math.ceil(source_width / sample_width), desc='Partitioning source image'):
+                for y in range(math.ceil(source_height / sample_height)):
+                    coordinates.append((x, y))
 
             # In parallel, process multiple boxes at the same time, on all CPUs
             with mp.Pool(mp.cpu_count()) as pool:
                 for result in tqdm(
                         pool.imap_unordered(
                             self._create_mosaic_piece,
-                            ([box, source_image, library] for box in boxes),
+                            ([coord, source_image, sample_width, sample_height, mosaic_width, mosaic_height, library] for coord in coordinates),
                             chunksize=1000),
                         desc='Generating mosaic',
-                        total=len(boxes)):
+                        total=len(coordinates)):
 
                     # Paste the replacement into the result image
-                    replacement_image, result_box = result
-                    result_image.paste(replacement_image, result_box)
+                    replacement_image, coordinates = result
+                    x, y = coordinates
+
+                    result_image.paste(
+                        replacement_image,
+                        (
+                            x * mosaic_width,
+                            y * mosaic_height,
+                            (x * mosaic_width) + mosaic_width,
+                            (y * mosaic_height) + mosaic_height))
 
             return result_image
 
